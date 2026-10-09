@@ -1,3 +1,4 @@
+
 from sqlalchemy import Column, Integer, String, DateTime
 from datetime import datetime
 
@@ -11,7 +12,13 @@ class User(Base):
     username = Column(String(50), unique=True, nullable=False)
     email = Column(String(100), unique=True, nullable=False, index=True)
     hashed_password = Column(String(255), nullable=False)
+
+    # Phase 2: Role-Based Access Control
+    role = Column(String(20), nullable=False, default="USER")
+
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class Event(Base):
     __tablename__ = "events"
 
@@ -25,9 +32,19 @@ class Event(Base):
 
     total_tickets = Column(Integer, nullable=False, default=100)
     available_tickets = Column(Integer, nullable=False, default=100)
-
     banner_image = Column(String(500), nullable=True)
+
+    # Phase 2: Organizer ownership and event lifecycle
+    organizer_id = Column(Integer, nullable=True, index=True)
+    event_status = Column(
+        String(20),
+        nullable=False,
+        default="UPCOMING"
+    )
+
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class Booking(Base):
     __tablename__ = "bookings"
 
@@ -38,6 +55,8 @@ class Booking(Base):
     total_amount = Column(Integer, nullable=False)
     booking_date = Column(DateTime, default=datetime.utcnow)
     status = Column(String(20), default="CONFIRMED")
+
+
 class Notification(Base):
     __tablename__ = "notifications"
 

@@ -1,5 +1,5 @@
 
-from sqlalchemy import Column, Integer, String, DateTime
+from sqlalchemy import Column, Integer, String, DateTime, Float
 from datetime import datetime
 
 from .database import Base
@@ -53,6 +53,9 @@ class Booking(Base):
     event_id = Column(Integer, nullable=False)
     ticket_count = Column(Integer, nullable=False)
     total_amount = Column(Integer, nullable=False)
+    coupon_id = Column(Integer, nullable=True)
+    discount_amount = Column(Integer, default=0, nullable=False)
+    final_amount = Column(Integer, default=0, nullable=False)
     booking_date = Column(DateTime, default=datetime.utcnow)
     status = Column(String(20), default="CONFIRMED")
 
@@ -66,4 +69,40 @@ class Notification(Base):
     message = Column(String(500), nullable=False)
     notification_type = Column(String(50), nullable=False)
     is_read = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+class Payment(Base):
+    __tablename__ = "payments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    booking_id = Column(Integer, nullable=False, index=True)
+    payment_method = Column(String(30), nullable=False)
+    payment_status = Column(String(20), default="PENDING", nullable=False)
+    transaction_id = Column(String(100), unique=True, nullable=True)
+    amount = Column(Integer, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class Coupon(Base):
+    __tablename__ = "coupons"
+
+    id = Column(Integer, primary_key=True, index=True)
+    coupon_code = Column(String(50), unique=True, nullable=False, index=True)
+    discount_type = Column(String(20), nullable=False)
+    discount_value = Column(Float, nullable=False)
+    minimum_booking_amount = Column(Integer, default=0, nullable=False)
+    expiry_date = Column(DateTime, nullable=True)
+    usage_limit = Column(Integer, default=100, nullable=False)
+    usage_count = Column(Integer, default=0, nullable=False)
+    is_active = Column(Integer, default=1, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class Review(Base):
+    __tablename__ = "reviews"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    event_id = Column(Integer, nullable=False, index=True)
+    rating = Column(Integer, nullable=False)
+    review_text = Column(String(1000), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)

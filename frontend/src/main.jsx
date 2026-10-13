@@ -10,6 +10,8 @@ import Notifications from "./pages/Notifications";
 import Profile from "./pages/Profile";
 import OrganizerDashboard from "./pages/OrganizerDashboard";
 import AdminDashboard from "./pages/AdminDashboard";
+import PaymentCheckout from "./pages/PaymentCheckout";
+import PaymentResult from "./pages/PaymentResult";
 import ProtectedRoute from "./components/ProtectedRoute";
 
 import "./App.css";
@@ -19,13 +21,19 @@ ReactDOM.createRoot(document.getElementById("root")).render(
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<App />} />
+
         <Route path="/events" element={<ProtectedRoute><Events /></ProtectedRoute>} />
         <Route path="/events/:id" element={<ProtectedRoute><EventDetails /></ProtectedRoute>} />
         <Route path="/bookings" element={<ProtectedRoute><Bookings /></ProtectedRoute>} />
         <Route path="/notifications" element={<ProtectedRoute><Notifications /></ProtectedRoute>} />
         <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
+
         <Route path="/organizer/dashboard" element={<ProtectedRoute><OrganizerDashboard /></ProtectedRoute>} />
         <Route path="/admin/dashboard" element={<ProtectedRoute><AdminDashboard /></ProtectedRoute>} />
+
+        <Route path="/payment/:bookingId" element={<ProtectedRoute><PaymentCheckout /></ProtectedRoute>} />
+        <Route path="/payment-result/:bookingId" element={<ProtectedRoute><PaymentResult /></ProtectedRoute>} />
+
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>

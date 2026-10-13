@@ -1418,3 +1418,220 @@ body {
   .dashboard-actions { width: 100%; }
   .dashboard-actions > span { width: 100%; }
 }
+
+/* =========================
+   MODULE 17: FINAL UI POLISH
+========================= */
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  color: #111827;
+  line-height: 1.5;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  transition: background-color 0.2s ease,
+    transform 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+button:not(:disabled):hover {
+  transform: translateY(-1px);
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+button:focus-visible,
+a:focus-visible {
+  outline: 3px solid #93c5fd;
+  outline-offset: 2px;
+}
+
+.events-page,
+.details-page,
+.bookings-page,
+.notifications-page {
+  padding-bottom: 60px;
+}
+
+.event-card,
+.details-card,
+.booking-card,
+.notification-card,
+.reminder-card,
+.dashboard-panel,
+.metric-card {
+  transition: box-shadow 0.2s ease;
+}
+
+.event-card:hover,
+.booking-card:hover,
+.notification-card:hover {
+  box-shadow: 0 12px 28px rgba(17, 24, 39, 0.12);
+}
+
+.event-description {
+  overflow-wrap: anywhere;
+}
+
+.coupon-section {
+  margin-top: 22px;
+}
+
+.coupon-section label,
+.reviews-section label {
+  display: block;
+  margin-bottom: 8px;
+  font-weight: 600;
+  color: #374151;
+}
+
+.coupon-input-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.coupon-input-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 7px;
+}
+
+.coupon-input-row button,
+.coupon-success button {
+  padding: 11px 16px;
+  border: none;
+  border-radius: 7px;
+  background: #2563eb;
+  color: white;
+  cursor: pointer;
+}
+
+.coupon-error,
+.notification-error {
+  color: #b91c1c;
+  margin-top: 10px;
+}
+
+.coupon-success {
+  margin-top: 14px;
+  padding: 16px;
+  border-radius: 10px;
+  background: #dcfce7;
+  color: #166534;
+}
+
+.reviews-section {
+  max-width: 1000px;
+  margin: 30px auto 0;
+  padding: 28px;
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-radius: 14px;
+  box-shadow: 0 5px 20px rgba(0, 0, 0, 0.05);
+}
+
+.reviews-section textarea {
+  display: block;
+  width: 100%;
+  min-height: 110px;
+  padding: 12px;
+  margin-bottom: 15px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  resize: vertical;
+}
+
+.reviews-section form > button {
+  padding: 11px 18px;
+  border: none;
+  border-radius: 7px;
+  background: #2563eb;
+  color: white;
+  cursor: pointer;
+}
+
+.review-card {
+  margin-top: 15px;
+  padding: 16px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  overflow-wrap: anywhere;
+}
+
+.review-card p:first-child {
+  color: #f59e0b;
+  letter-spacing: 2px;
+}
+
+.review-card small {
+  color: #6b7280;
+}
+
+.notification-error {
+  max-width: 900px;
+  margin: 0 auto 20px;
+  padding: 14px;
+  background: #fee2e2;
+  border-radius: 8px;
+}
+
+@media (max-width: 700px) {
+  .reviews-section {
+    margin: 20px 0 0;
+    padding: 18px;
+  }
+
+  .details-banner,
+  .details-banner-placeholder {
+    height: 220px;
+  }
+
+  .events-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .event-filters {
+    gap: 12px;
+  }
+
+  .coupon-input-row {
+    flex-direction: column;
+  }
+
+  .coupon-input-row button {
+    width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}

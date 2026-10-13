@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, date
 from io import BytesIO
 from collections import Counter, defaultdict
+import uuid
 import os
 
 import qrcode
@@ -350,37 +351,93 @@ def organizer_analytics(
 
 # ---------------- BOOKINGS / QR ----------------
 
-@app.post("/bookings", response_model=schemas.BookingResponse)
-def create_booking(
-    booking: schemas.BookingCreate,
+@app.post("/bookings/checkout")
+def checkout_booking(
+    data: schemas.BookingCheckout,
     current_user=Depends(require_user),
     db: Session = Depends(get_db),
 ):
-    event = _event_or_404(db, booking.event_id)
+    event = _event_or_404(db, data.event_id)
     _refresh_event_statuses(db)
+
     if event.event_status in {"CANCELLED", "COMPLETED"}:
-        raise HTTPException(status_code=400, detail=f"Cannot book an event with status {event.event_status}")
-    if booking.ticket_count > event.available_tickets:
-        raise HTTPException(status_code=400, detail="Not enough tickets available")
-    event.available_tickets -= booking.ticket_count
-    new_booking = models.Booking(
+        raise HTTPException(400, "Event is not available for booking")
+
+    if data.ticket_count > event.available_tickets:
+        raise HTTPException(400, "Not enough tickets available")
+
+    total = event.ticket_price * data.ticket_count
+    discount = 0
+    coupon = None
+
+    if data.coupon_code:
+        coupon = db.query(models.Coupon).filter(
+            models.Coupon.coupon_code == data.coupon_code.strip().upper()
+        ).first()
+
+        if not coupon or not coupon.is_active:
+            raise HTTPException(400, "Invalid coupon")
+
+        if coupon.expiry_date and coupon.expiry_date < datetime.utcnow():
+            raise HTTPException(400, "Coupon has expired")
+
+        if coupon.usage_count >= coupon.usage_limit:
+            raise HTTPException(400, "Coupon usage limit reached")
+
+        if total < coupon.minimum_booking_amount:
+            raise HTTPException(400, "Minimum booking amount not met")
+
+        if coupon.discount_type == "PERCENTAGE":
+            discount = int(total * coupon.discount_value / 100)
+        elif coupon.discount_type == "FIXED":
+            discount = int(coupon.discount_value)
+        else:
+            raise HTTPException(400, "Invalid coupon configuration")
+
+        discount = min(discount, total)
+
+    final_amount = total - discount
+
+    booking = models.Booking(
         user_id=current_user["user_id"],
         event_id=event.id,
-        ticket_count=booking.ticket_count,
-        total_amount=event.ticket_price * booking.ticket_count,
-        status="CONFIRMED",
+        ticket_count=data.ticket_count,
+        total_amount=total,
+        status="PENDING",
+        coupon_id=coupon.id if coupon else None,
+        discount_amount=discount,
+        final_amount=final_amount,
     )
-    db.add(new_booking)
-    db.flush()
-    _create_notification(
-        db, current_user["user_id"],
-        f"Your booking #{new_booking.id} for '{event.title}' has been confirmed.",
-        "BOOKING_CONFIRMED", new_booking.id,
-    )
-    db.commit()
-    db.refresh(new_booking)
-    return new_booking
 
+    event.available_tickets -= data.ticket_count
+    db.add(booking)
+    db.flush()
+
+    payment = models.Payment(
+        booking_id=booking.id,
+        payment_method="SIMULATED",
+        payment_status="PENDING",
+        amount=final_amount,
+    )
+    db.add(payment)
+
+    if coupon:
+        coupon.usage_count += 1
+
+    db.commit()
+    db.refresh(booking)
+
+    return {
+        "booking_id": booking.id,
+        "payment_id": payment.id,
+        "event_title": event.title,
+        "ticket_count": booking.ticket_count,
+        "total_amount": total,
+        "discount_amount": discount,
+        "final_amount": final_amount,
+        "booking_status": booking.status,
+        "payment_status": payment.payment_status,
+    }
 
 @app.get("/bookings", response_model=list[schemas.BookingHistoryResponse])
 def get_my_bookings(
@@ -560,3 +617,278 @@ def admin_analytics(
         "top_revenue_events": top_revenue[:10],
         "filters": {"start_date": start_date, "end_date": end_date},
     }
+@app.post("/payments/{booking_id}")
+def simulate_payment(
+    booking_id: int,
+    data: schemas.PaymentRequest,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    booking = db.query(models.Booking).filter(
+        models.Booking.id == booking_id,
+        models.Booking.user_id == current_user["user_id"],
+    ).first()
+
+    if not booking:
+        raise HTTPException(404, "Booking not found")
+
+    if booking.status != "PENDING":
+        raise HTTPException(400, "Booking is not pending payment")
+
+    payment = db.query(models.Payment).filter(
+        models.Payment.booking_id == booking_id,
+        models.Payment.payment_status == "PENDING",
+    ).first()
+
+    if not payment:
+        raise HTTPException(404, "Pending payment not found")
+
+    event = _event_or_404(db, booking.event_id)
+
+    if data.simulate_success:
+        payment.payment_status = "SUCCESS"
+        payment.transaction_id = "SIM-" + uuid.uuid4().hex[:16].upper()
+        booking.status = "CONFIRMED"
+
+        _create_notification(
+            db, booking.user_id,
+            f"Payment successful for booking #{booking.id}.",
+            "PAYMENT_SUCCESS", booking.id,
+        )
+        message = "Payment successful"
+    else:
+        payment.payment_status = "FAILED"
+        payment.transaction_id = "SIM-" + uuid.uuid4().hex[:16].upper()
+        booking.status = "FAILED"
+        event.available_tickets += booking.ticket_count
+
+        _create_notification(
+            db, booking.user_id,
+            f"Payment failed for booking #{booking.id}.",
+            "PAYMENT_FAILED", booking.id,
+        )
+        message = "Payment failed"
+
+    db.commit()
+
+    return {
+        "message": message,
+        "booking_id": booking.id,
+        "booking_status": booking.status,
+        "payment_status": payment.payment_status,
+        "transaction_id": payment.transaction_id,
+        "amount": payment.amount,
+    }
+@app.post("/admin/coupons")
+def create_coupon(
+    data: schemas.CouponCreate,
+    current_user=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    code = data.coupon_code.strip().upper()
+
+    if data.discount_type not in {"PERCENTAGE", "FIXED"}:
+        raise HTTPException(400, "Use PERCENTAGE or FIXED")
+
+    if data.discount_type == "PERCENTAGE" and data.discount_value > 100:
+        raise HTTPException(400, "Percentage cannot exceed 100")
+
+    if db.query(models.Coupon).filter(
+        models.Coupon.coupon_code == code
+    ).first():
+        raise HTTPException(400, "Coupon already exists")
+
+    coupon = models.Coupon(
+        coupon_code=code,
+        discount_type=data.discount_type,
+        discount_value=data.discount_value,
+        minimum_booking_amount=data.minimum_booking_amount,
+        expiry_date=data.expiry_date,
+        usage_limit=data.usage_limit,
+    )
+    db.add(coupon)
+    db.commit()
+    db.refresh(coupon)
+
+    return {"message": "Coupon created", "coupon_id": coupon.id, "coupon_code": code}
+@app.post("/coupons/validate")
+def validate_coupon(
+    data: schemas.CouponApply,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    coupon = db.query(models.Coupon).filter(
+        models.Coupon.coupon_code == data.coupon_code.strip().upper()
+    ).first()
+
+    if not coupon or not coupon.is_active:
+        raise HTTPException(400, "Invalid coupon code")
+
+    if coupon.expiry_date and coupon.expiry_date < datetime.utcnow():
+        raise HTTPException(400, "Coupon has expired")
+
+    if coupon.usage_count >= coupon.usage_limit:
+        raise HTTPException(400, "Coupon usage limit reached")
+
+    if data.amount < coupon.minimum_booking_amount:
+        raise HTTPException(400, "Minimum booking amount not met")
+
+    if coupon.discount_type.upper() == "PERCENTAGE":
+        discount = int(data.amount * coupon.discount_value / 100)
+    elif coupon.discount_type.upper() == "FIXED":
+        discount = int(coupon.discount_value)
+    else:
+        raise HTTPException(400, "Invalid coupon configuration")
+
+    discount = min(discount, data.amount)
+
+    return {
+        "coupon_code": coupon.coupon_code,
+        "discount_amount": discount,
+        "final_amount": data.amount - discount,
+    }
+
+# ---------------- EVENT REVIEWS & RATINGS ----------------
+
+from sqlalchemy import func
+
+
+@app.post("/events/{event_id}/reviews")
+def create_review(
+    event_id: int,
+    data: schemas.ReviewCreate,
+    current_user=Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    event = _event_or_404(db, event_id)
+
+    # Only users with a confirmed booking can review an event.
+    booking = db.query(models.Booking).filter(
+        models.Booking.event_id == event_id,
+        models.Booking.user_id == current_user["user_id"],
+        models.Booking.status == "CONFIRMED",
+    ).first()
+
+    if not booking:
+        raise HTTPException(
+            status_code=403,
+            detail="You must have a confirmed booking to review this event",
+        )
+
+    existing = db.query(models.Review).filter(
+        models.Review.event_id == event_id,
+        models.Review.user_id == current_user["user_id"],
+    ).first()
+
+    if existing:
+        raise HTTPException(
+            status_code=400,
+            detail="You have already reviewed this event",
+        )
+
+    review = models.Review(
+        user_id=current_user["user_id"],
+        event_id=event.id,
+        rating=data.rating,
+        review_text=data.comment,
+    )
+
+    db.add(review)
+    db.commit()
+    db.refresh(review)
+
+    return {
+        "message": "Review submitted successfully",
+        "review_id": review.id,
+        "event_id": review.event_id,
+        "rating": review.rating,
+        "review_text": review.review_text,
+    }
+
+
+@app.get("/events/{event_id}/reviews")
+def get_event_reviews(
+    event_id: int,
+    db: Session = Depends(get_db),
+):
+    _event_or_404(db, event_id)
+
+    reviews = db.query(models.Review).filter(
+        models.Review.event_id == event_id
+    ).order_by(models.Review.created_at.desc()).all()
+
+    average_rating = db.query(
+        func.avg(models.Review.rating)
+    ).filter(
+        models.Review.event_id == event_id
+    ).scalar()
+
+    return {
+        "event_id": event_id,
+        "average_rating": round(average_rating or 0, 2),
+        "total_reviews": len(reviews),
+        "reviews": [
+            {
+                "id": review.id,
+                "user_id": review.user_id,
+                "rating": review.rating,
+                "review_text": review.review_text,
+                "created_at": review.created_at,
+            }
+            for review in reviews
+        ],
+    }
+
+
+@app.put("/reviews/{review_id}")
+def update_review(
+    review_id: int,
+    data: schemas.ReviewCreate,
+    current_user=Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    review = db.query(models.Review).filter(
+        models.Review.id == review_id
+    ).first()
+
+    if not review:
+        raise HTTPException(status_code=404, detail="Review not found")
+
+    if review.user_id != current_user["user_id"]:
+        raise HTTPException(
+            status_code=403,
+            detail="You can only edit your own review",
+        )
+
+    review.rating = data.rating
+    review.review_text = data.comment
+
+    db.commit()
+    db.refresh(review)
+
+    return {"message": "Review updated successfully", "review_id": review.id}
+
+
+@app.delete("/reviews/{review_id}")
+def delete_review(
+    review_id: int,
+    current_user=Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    review = db.query(models.Review).filter(
+        models.Review.id == review_id
+    ).first()
+
+    if not review:
+        raise HTTPException(status_code=404, detail="Review not found")
+
+    if review.user_id != current_user["user_id"]:
+        raise HTTPException(
+            status_code=403,
+            detail="You can only delete your own review",
+        )
+
+    db.delete(review)
+    db.commit()
+
+    return {"message": "Review deleted successfully"}

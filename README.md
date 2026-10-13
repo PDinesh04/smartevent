@@ -159,4 +159,60 @@ Important:
 - Admin dashboard shows metrics, daily/monthly sales tables, popular/top revenue events, users, events, and bookings.
 - Date filters expect YYYY-MM-DD.
 - Backend APIs must be running on http://127.0.0.1:8001.
+## Modules 12–17: Additional Features
+
+### Module 12: Payment Processing
+- Simulated payment success and failure.
+- Payment status and transaction ID tracking.
+- Booking confirmation after successful payment.
+
+### Module 13: Coupons and Discounts
+- Create and validate discount coupons.
+- Apply discounts during checkout.
+- Calculate the final booking amount.
+
+### Module 14: Event Reviews and Ratings
+- Submit reviews and ratings for events.
+- View event reviews and average ratings.
+- Update or delete your own reviews.
+
+### Module 15: Notifications
+- View notifications and reminders.
+- Mark notifications as read.
+- Refresh notification data.
+
+### Module 16: Event Search and Sorting
+- Search events by keyword.
+- Filter by category, location, and date.
+- Sort events by date, price, and popularity.
+
+### Module 17: UI Improvements
+- Improved styling and responsive layouts.
+- Enhanced buttons, forms, and focus states.
+- Improved reviews, notifications, and checkout pages.
+
+## Technologies Used
+- **Backend:** Python, FastAPI, SQLAlchemy
+- **Frontend:** React, Vite, CSS
+- **Database:** SQLite
+- **API Testing:** FastAPI Swagger UI
+
+## Running the Application
+
+### Backend
+```bash
+cd backend
+uvicorn app.main:app --reload --port 8001
+```
+
+Open `http://127.0.0.1:8001/docs` to test the APIs.
+
+### Frontend
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open the local URL shown in the terminal.
 

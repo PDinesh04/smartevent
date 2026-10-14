@@ -63,7 +63,7 @@ SmartEvent is a full-stack web application that allows users to discover events,
 
 ## Project Structure
 
-```text
+
 SmartEvent/
 │
 ├── backend/
@@ -196,23 +196,66 @@ Important:
 - **Frontend:** React, Vite, CSS
 - **Database:** SQLite
 - **API Testing:** FastAPI Swagger UI
+## Modules 18–24: Phase 4 — Real-Time Experience, Personalization & AI Features
+
+### Module 18: Real-Time Seat Availability
+- Automatic ticket availability updates using polling.
+- Prevent overbooking with conditional database updates.
+- Display updated ticket counts on event details pages.
+
+### Module 19: Personalized Event Recommendations
+- Recommend events based on previously booked categories.
+- Exclude events already booked by the user.
+- Display recommended events and trending events.
+
+### Module 20: Wishlist
+- Add events to a personal wishlist.
+- View saved events.
+- Remove events from the wishlist.
+- Access saved events for booking.
+
+### Module 21: Live Event Updates
+- Allow organizers to publish event announcements.
+- Retrieve updates for individual events.
+- Display event announcements to users.
+
+### Module 22: User Profile Enhancements
+- View profile details.
+- Update username and email.
+- View booking statistics and ticket summaries.
+
+### Module 23: Advanced Search & Smart Filters
+- Search events by keyword.
+- Filter by category, location, price range, and date range.
+- Sort events by date, price, title, and popularity.
+
+### Module 24: Chatbot Assistant
+- Provide rule-based assistance for event discovery.
+- Answer basic booking-related questions.
+- Display trending events and booking information.
+- Offer suggested queries to guide users.
+
+**Note:** The current chatbot uses rule-based responses. External AI service integration and conversation-history support are not confirmed.
+
+## Phase 4 Status
+The Phase 4 features have been tested by the developer. Final verification of all requirements, including concurrent booking behavior and real-time updates, is recommended before production deployment.
 
 ## Running the Application
 
 ### Backend
-```bash
+
 cd backend
 uvicorn app.main:app --reload --port 8001
-```
 
 Open `http://127.0.0.1:8001/docs` to test the APIs.
 
 ### Frontend
-```bash
+
 cd frontend
 npm install
 npm run dev
-```
+
 
 Open the local URL shown in the terminal.
+
 

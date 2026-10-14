@@ -156,46 +156,167 @@ def get_me(current_user=Depends(get_current_user)):
 
 # ---------------- PUBLIC EVENT DISCOVERY ----------------
 
+
 @app.get("/events", response_model=list[schemas.EventResponse])
 def get_events(
     category: str | None = None,
     search: str | None = None,
-    sort: str = Query(default="date", pattern="^(date|price_asc|price_desc|title)$"),
+    location: str | None = None,
+    min_price: int | None = Query(default=None, ge=0),
+    max_price: int | None = Query(default=None, ge=0),
+    start_date: date | None = None,
+    end_date: date | None = None,
+    sort: str = Query(
+        default="date",
+        pattern="^(date|price_asc|price_desc|title|popularity)$"
+    ),
     db: Session = Depends(get_db),
 ):
     _refresh_event_statuses(db)
-    query = db.query(models.Event).filter(models.Event.event_status != "CANCELLED")
+
+    query = db.query(models.Event).filter(
+        models.Event.event_status != "CANCELLED"
+    )
+
     if category:
-        query = query.filter(models.Event.category.ilike(category))
-    if search:
         query = query.filter(
-            (models.Event.title.ilike(f"%{search}%")) |
-            (models.Event.description.ilike(f"%{search}%")) |
-            (models.Event.location.ilike(f"%{search}%"))
+            models.Event.category.ilike(f"%{category.strip()}%")
         )
+
+    if search:
+        term = f"%{search.strip()}%"
+        query = query.filter(
+            (models.Event.title.ilike(term)) |
+            (models.Event.description.ilike(term)) |
+            (models.Event.location.ilike(term))
+        )
+
+    if location:
+        query = query.filter(
+            models.Event.location.ilike(f"%{location.strip()}%")
+        )
+
+    if min_price is not None:
+        query = query.filter(models.Event.ticket_price >= min_price)
+
+    if max_price is not None:
+        query = query.filter(models.Event.ticket_price <= max_price)
+
+    if min_price is not None and max_price is not None and min_price > max_price:
+        raise HTTPException(
+            status_code=400,
+            detail="min_price cannot exceed max_price"
+        )
+
+    if start_date:
+        query = query.filter(
+            models.Event.event_date >= datetime.combine(start_date, datetime.min.time())
+        )
+
+    if end_date:
+        query = query.filter(
+            models.Event.event_date < datetime.combine(
+                end_date + timedelta(days=1), datetime.min.time()
+            )
+        )
+
+    if start_date and end_date and start_date > end_date:
+        raise HTTPException(
+            status_code=400,
+            detail="start_date cannot be after end_date"
+        )
+
     if sort == "price_asc":
         query = query.order_by(models.Event.ticket_price.asc())
     elif sort == "price_desc":
         query = query.order_by(models.Event.ticket_price.desc())
     elif sort == "title":
         query = query.order_by(models.Event.title.asc())
+    elif sort == "popularity":
+        booking_counts = (
+            db.query(
+                models.Booking.event_id,
+                func.sum(models.Booking.ticket_count).label("tickets_sold")
+            )
+            .filter(models.Booking.status == "CONFIRMED")
+            .group_by(models.Booking.event_id)
+            .subquery()
+        )
+        query = query.outerjoin(
+            booking_counts,
+            models.Event.id == booking_counts.c.event_id
+        ).order_by(
+            func.coalesce(booking_counts.c.tickets_sold, 0).desc(),
+            models.Event.event_date.asc()
+        )
     else:
         query = query.order_by(models.Event.event_date.asc())
+
     return query.all()
 
+@app.get("/events/recommendations")
+def get_event_recommendations(
+    current_user=Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    booked_categories = (
+        db.query(models.Event.category)
+        .join(models.Booking, models.Booking.event_id == models.Event.id)
+        .filter(
+            models.Booking.user_id == current_user["user_id"],
+            models.Booking.status == "CONFIRMED",
+        )
+        .distinct()
+        .all()
+    )
+
+    categories = [row[0] for row in booked_categories]
+
+    query = db.query(models.Event).filter(
+        models.Event.event_status == "UPCOMING",
+        models.Event.available_tickets > 0,
+    )
+
+    if categories:
+        query = query.filter(models.Event.category.in_(categories))
+
+    booked_event_ids = (
+        db.query(models.Booking.event_id)
+        .filter(
+            models.Booking.user_id == current_user["user_id"],
+            models.Booking.status == "CONFIRMED",
+        )
+        .subquery()
+    )
+
+    return (
+        query.filter(~models.Event.id.in_(booked_event_ids))
+        .order_by(models.Event.event_date.asc())
+        .limit(10)
+        .all()
+    )
+
+
+# ---------------- GET SINGLE EVENT ----------------
 
 @app.get("/events/{event_id}", response_model=schemas.EventResponse)
 def get_event(event_id: int, db: Session = Depends(get_db)):
     _refresh_event_statuses(db)
+
     event = _event_or_404(db, event_id)
+
     if event.event_status == "CANCELLED":
-        raise HTTPException(status_code=410, detail="This event has been cancelled")
+        raise HTTPException(
+            status_code=410,
+            detail="This event has been cancelled",
+        )
+
     return event
 
 
 # ---------------- ORGANIZER EVENT MANAGEMENT ----------------
 
-@app.post("/events", response_model=schemas.EventResponse)
+@app.post("/book/events", response_model=schemas.EventResponse)
 def create_event(
     event: schemas.EventCreate,
     current_user=Depends(require_organizer),
@@ -357,87 +478,121 @@ def checkout_booking(
     current_user=Depends(require_user),
     db: Session = Depends(get_db),
 ):
-    event = _event_or_404(db, data.event_id)
-    _refresh_event_statuses(db)
+    try:
+        _refresh_event_statuses(db)
 
-    if event.event_status in {"CANCELLED", "COMPLETED"}:
-        raise HTTPException(400, "Event is not available for booking")
+        # Atomically reserve tickets to prevent overbooking
+        result = db.query(models.Event).filter(
+            models.Event.id == data.event_id,
+            models.Event.available_tickets >= data.ticket_count,
+            ~models.Event.event_status.in_(["CANCELLED", "COMPLETED"]),
+        ).update(
+            {
+                models.Event.available_tickets:
+                    models.Event.available_tickets - data.ticket_count
+            },
+            synchronize_session=False,
+        )
 
-    if data.ticket_count > event.available_tickets:
-        raise HTTPException(400, "Not enough tickets available")
+        if result == 0:
+            db.rollback()
+            event = _event_or_404(db, data.event_id)
 
-    total = event.ticket_price * data.ticket_count
-    discount = 0
-    coupon = None
+            if event.event_status in {"CANCELLED", "COMPLETED"}:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Event is not available for booking",
+                )
 
-    if data.coupon_code:
-        coupon = db.query(models.Coupon).filter(
-            models.Coupon.coupon_code == data.coupon_code.strip().upper()
-        ).first()
+            raise HTTPException(
+                status_code=400,
+                detail="Not enough tickets available",
+            )
 
-        if not coupon or not coupon.is_active:
-            raise HTTPException(400, "Invalid coupon")
+        event = _event_or_404(db, data.event_id)
 
-        if coupon.expiry_date and coupon.expiry_date < datetime.utcnow():
-            raise HTTPException(400, "Coupon has expired")
+        total = event.ticket_price * data.ticket_count
+        discount = 0
+        coupon = None
 
-        if coupon.usage_count >= coupon.usage_limit:
-            raise HTTPException(400, "Coupon usage limit reached")
+        if data.coupon_code:
+            coupon = db.query(models.Coupon).filter(
+                models.Coupon.coupon_code
+                == data.coupon_code.strip().upper()
+            ).first()
 
-        if total < coupon.minimum_booking_amount:
-            raise HTTPException(400, "Minimum booking amount not met")
+            if not coupon or not coupon.is_active:
+                raise HTTPException(400, "Invalid coupon")
 
-        if coupon.discount_type == "PERCENTAGE":
-            discount = int(total * coupon.discount_value / 100)
-        elif coupon.discount_type == "FIXED":
-            discount = int(coupon.discount_value)
-        else:
-            raise HTTPException(400, "Invalid coupon configuration")
+            if coupon.expiry_date and coupon.expiry_date < datetime.utcnow():
+                raise HTTPException(400, "Coupon has expired")
 
-        discount = min(discount, total)
+            if coupon.usage_count >= coupon.usage_limit:
+                raise HTTPException(400, "Coupon usage limit reached")
 
-    final_amount = total - discount
+            if total < coupon.minimum_booking_amount:
+                raise HTTPException(400, "Minimum booking amount not met")
 
-    booking = models.Booking(
-        user_id=current_user["user_id"],
-        event_id=event.id,
-        ticket_count=data.ticket_count,
-        total_amount=total,
-        status="PENDING",
-        coupon_id=coupon.id if coupon else None,
-        discount_amount=discount,
-        final_amount=final_amount,
-    )
+            if coupon.discount_type == "PERCENTAGE":
+                discount = int(total * coupon.discount_value / 100)
+            elif coupon.discount_type == "FIXED":
+                discount = int(coupon.discount_value)
+            else:
+                raise HTTPException(400, "Invalid coupon configuration")
 
-    event.available_tickets -= data.ticket_count
-    db.add(booking)
-    db.flush()
+            discount = min(discount, total)
 
-    payment = models.Payment(
-        booking_id=booking.id,
-        payment_method="SIMULATED",
-        payment_status="PENDING",
-        amount=final_amount,
-    )
-    db.add(payment)
+        final_amount = total - discount
 
-    if coupon:
-        coupon.usage_count += 1
+        booking = models.Booking(
+            user_id=current_user["user_id"],
+            event_id=event.id,
+            ticket_count=data.ticket_count,
+            total_amount=total,
+            status="PENDING",
+            coupon_id=coupon.id if coupon else None,
+            discount_amount=discount,
+            final_amount=final_amount,
+        )
 
-    db.commit()
-    db.refresh(booking)
+        db.add(booking)
+        db.flush()
 
-    return {
-        "booking_id": booking.id,
-        "payment_id": payment.id,
-        "event_title": event.title,
-        "ticket_count": booking.ticket_count,
-        "total_amount": total,
-        "discount_amount": discount,
-        "final_amount": final_amount,
-        "booking_status": booking.status,
-        "payment_status": payment.payment_status,
-    }
+        payment = models.Payment(
+            booking_id=booking.id,
+            payment_method="SIMULATED",
+            payment_status="PENDING",
+            amount=final_amount,
+        )
+        db.add(payment)
+
+        if coupon:
+            coupon.usage_count += 1
+
+        db.commit()
+        db.refresh(booking)
+
+        return {
+            "booking_id": booking.id,
+            "payment_id": payment.id,
+            "event_title": event.title,
+            "ticket_count": booking.ticket_count,
+            "total_amount": total,
+            "discount_amount": discount,
+            "final_amount": final_amount,
+            "booking_status": booking.status,
+            "payment_status": payment.payment_status,
+        }
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="Booking failed. Please try again.",
+        )
 
 @app.get("/bookings", response_model=list[schemas.BookingHistoryResponse])
 def get_my_bookings(
@@ -624,61 +779,79 @@ def simulate_payment(
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    booking = db.query(models.Booking).filter(
-        models.Booking.id == booking_id,
-        models.Booking.user_id == current_user["user_id"],
-    ).first()
+    try:
+        booking = db.query(models.Booking).filter(
+            models.Booking.id == booking_id,
+            models.Booking.user_id == current_user["user_id"],
+        ).with_for_update().first()
 
-    if not booking:
-        raise HTTPException(404, "Booking not found")
+        if not booking:
+            raise HTTPException(404, "Booking not found")
 
-    if booking.status != "PENDING":
-        raise HTTPException(400, "Booking is not pending payment")
+        if booking.status != "PENDING":
+            raise HTTPException(400, "Booking is not pending payment")
 
-    payment = db.query(models.Payment).filter(
-        models.Payment.booking_id == booking_id,
-        models.Payment.payment_status == "PENDING",
-    ).first()
+        payment = db.query(models.Payment).filter(
+            models.Payment.booking_id == booking_id,
+            models.Payment.payment_status == "PENDING",
+        ).first()
 
-    if not payment:
-        raise HTTPException(404, "Pending payment not found")
+        if not payment:
+            raise HTTPException(404, "Pending payment not found")
 
-    event = _event_or_404(db, booking.event_id)
+        event = _event_or_404(db, booking.event_id)
 
-    if data.simulate_success:
-        payment.payment_status = "SUCCESS"
-        payment.transaction_id = "SIM-" + uuid.uuid4().hex[:16].upper()
-        booking.status = "CONFIRMED"
-
-        _create_notification(
-            db, booking.user_id,
-            f"Payment successful for booking #{booking.id}.",
-            "PAYMENT_SUCCESS", booking.id,
+        payment.transaction_id = (
+            "SIM-" + uuid.uuid4().hex[:16].upper()
         )
-        message = "Payment successful"
-    else:
-        payment.payment_status = "FAILED"
-        payment.transaction_id = "SIM-" + uuid.uuid4().hex[:16].upper()
-        booking.status = "FAILED"
-        event.available_tickets += booking.ticket_count
 
-        _create_notification(
-            db, booking.user_id,
-            f"Payment failed for booking #{booking.id}.",
-            "PAYMENT_FAILED", booking.id,
+        if data.simulate_success:
+            payment.payment_status = "SUCCESS"
+            booking.status = "CONFIRMED"
+
+            _create_notification(
+                db,
+                booking.user_id,
+                f"Payment successful for booking #{booking.id}.",
+                "PAYMENT_SUCCESS",
+                booking.id,
+            )
+            message = "Payment successful"
+
+        else:
+            payment.payment_status = "FAILED"
+            booking.status = "FAILED"
+            event.available_tickets += booking.ticket_count
+
+            _create_notification(
+                db,
+                booking.user_id,
+                f"Payment failed for booking #{booking.id}.",
+                "PAYMENT_FAILED",
+                booking.id,
+            )
+            message = "Payment failed"
+
+        db.commit()
+
+        return {
+            "message": message,
+            "booking_id": booking.id,
+            "booking_status": booking.status,
+            "payment_status": payment.payment_status,
+            "transaction_id": payment.transaction_id,
+            "amount": payment.amount,
+        }
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="Payment processing failed. Please try again.",
         )
-        message = "Payment failed"
-
-    db.commit()
-
-    return {
-        "message": message,
-        "booking_id": booking.id,
-        "booking_status": booking.status,
-        "payment_status": payment.payment_status,
-        "transaction_id": payment.transaction_id,
-        "amount": payment.amount,
-    }
 @app.post("/admin/coupons")
 def create_coupon(
     data: schemas.CouponCreate,
@@ -892,3 +1065,324 @@ def delete_review(
     db.commit()
 
     return {"message": "Review deleted successfully"}
+
+
+# ---------------- WISHLIST ----------------
+
+@app.post("/wishlist")
+def add_to_wishlist(
+    data: schemas.WishlistCreate,
+    current_user=Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    event = _event_or_404(db, data.event_id)
+
+    existing = db.query(models.Wishlist).filter(
+        models.Wishlist.user_id == current_user["user_id"],
+        models.Wishlist.event_id == data.event_id,
+    ).first()
+
+    if existing:
+        raise HTTPException(status_code=400, detail="Event already in wishlist")
+
+    item = models.Wishlist(
+        user_id=current_user["user_id"],
+        event_id=event.id,
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+
+    return {"message": "Event added to wishlist", "wishlist_id": item.id}
+
+
+@app.get("/wishlist")
+def get_wishlist(
+    current_user=Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    items = db.query(models.Wishlist).filter(
+        models.Wishlist.user_id == current_user["user_id"]
+    ).order_by(models.Wishlist.created_at.desc()).all()
+
+    return [
+        {
+            "id": item.id,
+            "event_id": item.event_id,
+            "created_at": item.created_at,
+            "event": db.query(models.Event).filter(
+                models.Event.id == item.event_id
+            ).first(),
+        }
+        for item in items
+    ]
+
+
+@app.delete("/wishlist/{event_id}")
+def remove_from_wishlist(
+    event_id: int,
+    current_user=Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    item = db.query(models.Wishlist).filter(
+        models.Wishlist.user_id == current_user["user_id"],
+        models.Wishlist.event_id == event_id,
+    ).first()
+
+    if not item:
+        raise HTTPException(status_code=404, detail="Wishlist item not found")
+
+    db.delete(item)
+    db.commit()
+    return {"message": "Event removed from wishlist"}
+
+# ---------------- LIVE EVENT UPDATES ----------------
+
+@app.post("/events/updates")
+def create_event_update(
+    data: schemas.EventUpdateCreate,
+    current_user=Depends(require_organizer),
+    db: Session = Depends(get_db),
+):
+    event = _event_or_404(db, data.event_id)
+    _check_event_owner(event, current_user)
+
+    message = data.message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+    update = models.EventUpdate(
+        event_id=event.id,
+        message=message,
+    )
+    db.add(update)
+    db.commit()
+    db.refresh(update)
+
+    return {
+        "message": "Event update posted successfully",
+        "update_id": update.id,
+        "event_id": update.event_id,
+        "announcement": update.message,
+        "created_at": update.created_at,
+    }
+
+
+@app.get("/events/{event_id}/updates")
+def get_event_updates(
+    event_id: int,
+    db: Session = Depends(get_db),
+):
+    _event_or_404(db, event_id)
+
+    updates = db.query(models.EventUpdate).filter(
+        models.EventUpdate.event_id == event_id
+    ).order_by(models.EventUpdate.created_at.desc()).all()
+
+    return updates
+
+# ---------------- USER PROFILE ----------------
+
+@app.get("/profile")
+def get_profile(
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    user = db.query(models.User).filter(
+        models.User.id == current_user["user_id"]
+    ).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    booking_count = db.query(models.Booking).filter(
+        models.Booking.user_id == user.id
+    ).count()
+
+    confirmed_bookings = db.query(models.Booking).filter(
+        models.Booking.user_id == user.id,
+        models.Booking.status == "CONFIRMED",
+    ).all()
+
+    return {
+        "id": user.id,
+        "username": user.username,
+        "email": user.email,
+        "role": user.role,
+        "created_at": user.created_at,
+        "total_bookings": booking_count,
+        "confirmed_bookings": len(confirmed_bookings),
+        "tickets_booked": sum(b.ticket_count for b in confirmed_bookings),
+    }
+
+
+@app.put("/profile")
+def update_profile(
+    data: schemas.ProfileUpdate,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    user = db.query(models.User).filter(
+        models.User.id == current_user["user_id"]
+    ).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    updates = data.model_dump(exclude_unset=True)
+
+    if "username" in updates:
+        username = updates["username"].strip()
+        if not username:
+            raise HTTPException(status_code=400, detail="Username cannot be empty")
+        duplicate = db.query(models.User).filter(
+            models.User.username == username,
+            models.User.id != user.id,
+        ).first()
+        if duplicate:
+            raise HTTPException(status_code=400, detail="Username already exists")
+        user.username = username
+
+    if "email" in updates:
+        email = updates["email"].strip().lower()
+        if not email:
+            raise HTTPException(status_code=400, detail="Email cannot be empty")
+        duplicate = db.query(models.User).filter(
+            models.User.email == email,
+            models.User.id != user.id,
+        ).first()
+        if duplicate:
+            raise HTTPException(status_code=400, detail="Email already exists")
+        user.email = email
+
+    db.commit()
+    db.refresh(user)
+
+    return {
+        "message": "Profile updated successfully",
+        "username": user.username,
+        "email": user.email,
+    }
+
+# ---------------- SMART EVENT CHATBOT ----------------
+
+@app.post("/chatbot", response_model=schemas.ChatbotResponse)
+def chatbot(
+    data: schemas.ChatbotRequest,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    message = data.message.strip().lower()
+
+    if not message:
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+    if any(word in message for word in ["booking", "bookings", "my tickets"]):
+        bookings = db.query(models.Booking).filter(
+            models.Booking.user_id == current_user["user_id"]
+        ).order_by(models.Booking.booking_date.desc()).limit(10).all()
+
+        if not bookings:
+            reply = "You don't have any bookings yet."
+        else:
+            reply = "Here are your recent bookings:\n" + "\n".join(
+                f"Booking #{b.id}: Event ID {b.event_id}, "
+                f"{b.ticket_count} tickets, status {b.status}"
+                for b in bookings
+            )
+
+        return {
+            "reply": reply,
+            "suggestions": ["Trending events", "Find technology events"],
+        }
+
+    if any(word in message for word in ["trending", "popular"]):
+        popular = (
+            db.query(
+                models.Event,
+                func.coalesce(func.sum(models.Booking.ticket_count), 0).label("tickets_sold"),
+            )
+            .outerjoin(
+                models.Booking,
+                (models.Booking.event_id == models.Event.id)
+                & (models.Booking.status == "CONFIRMED"),
+            )
+            .filter(models.Event.event_status != "CANCELLED")
+            .group_by(models.Event.id)
+            .order_by(func.coalesce(func.sum(models.Booking.ticket_count), 0).desc())
+            .limit(5)
+            .all()
+        )
+
+        if not popular:
+            reply = "There are no events available right now."
+        else:
+            reply = "Trending events:\n" + "\n".join(
+                f"{event.title} — {event.location}, "
+                f"₹{event.ticket_price}, {event.available_tickets} tickets left"
+                for event, _ in popular
+            )
+
+        return {
+            "reply": reply,
+            "suggestions": ["Show my bookings", "Find music events"],
+        }
+
+    if any(word in message for word in ["near me", "nearby", "location"]):
+        events = db.query(models.Event).filter(
+            models.Event.event_status == "UPCOMING"
+        ).order_by(models.Event.event_date.asc()).limit(5).all()
+
+        reply = (
+            "I can't access your exact location. Here are upcoming events "
+            "you can browse by location:\n"
+            + "\n".join(
+                f"{e.title} — {e.location}, ₹{e.ticket_price}"
+                for e in events
+            )
+        ) if events else "No upcoming events were found."
+
+        return {
+            "reply": reply,
+            "suggestions": ["Trending events", "Show my bookings"],
+        }
+
+    if "music" in message or "technology" in message or "sports" in message:
+        category = next(
+            word for word in ["music", "technology", "sports"]
+            if word in message
+        )
+
+        events = db.query(models.Event).filter(
+            models.Event.category.ilike(f"%{category}%"),
+            models.Event.event_status == "UPCOMING",
+        ).order_by(models.Event.event_date.asc()).limit(5).all()
+
+        reply = (
+            f"Events in {category}:\n" + "\n".join(
+                f"{e.title} — {e.location}, ₹{e.ticket_price}"
+                for e in events
+            )
+        ) if events else f"No upcoming {category} events were found."
+
+        return {
+            "reply": reply,
+            "suggestions": ["Trending events", "Show my bookings"],
+        }
+
+    return {
+        "reply": (
+            "Welcome to SmartEvent! I can help you find events, "
+            "view trending events, check your bookings, or answer basic questions "
+            "about tickets. What would you like to do?"
+        ),
+        "suggestions": [
+            "Trending events",
+            "Find music events",
+            "Show my bookings",
+            "Help with ticket issues",
+        ],
+    }
+
+
+

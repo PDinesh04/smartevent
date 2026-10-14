@@ -32,7 +32,6 @@ function Events() {
 
         let data = [...response.data];
 
-        // Filter by location
         if (location.trim()) {
           data = data.filter((event) =>
             (event.location || "")
@@ -41,7 +40,6 @@ function Events() {
           );
         }
 
-        // Filter by date range
         if (startDate) {
           data = data.filter(
             (event) =>
@@ -58,7 +56,6 @@ function Events() {
           );
         }
 
-        // Sorting
         if (sort === "price-low") {
           data.sort(
             (a, b) => Number(a.ticket_price) - Number(b.ticket_price)
@@ -73,7 +70,6 @@ function Events() {
               new Date(a.event_date) - new Date(b.event_date)
           );
         } else if (sort === "popularity") {
-          // Popularity is based on confirmed bookings when available.
           data.sort(
             (a, b) =>
               Number(b.booking_count || 0) -
@@ -92,6 +88,18 @@ function Events() {
 
     fetchEvents();
   }, [search, category, sort, location, startDate, endDate]);
+
+  const addToWishlist = async (eventId) => {
+    try {
+      await api.post("/wishlist", { event_id: eventId });
+      alert("❤️ Event added to wishlist!");
+    } catch (error) {
+      alert(
+        error.response?.data?.detail ||
+          "Could not add event to wishlist."
+      );
+    }
+  };
 
   const clearFilters = () => {
     setSearch("");
@@ -186,9 +194,7 @@ function Events() {
           </button>
         </div>
 
-        {errorMessage && (
-          <p role="alert">{errorMessage}</p>
-        )}
+        {errorMessage && <p role="alert">{errorMessage}</p>}
 
         {loading ? (
           <div className="no-events">Loading events...</div>
@@ -227,8 +233,7 @@ function Events() {
                     <div className="event-meta">
                       <p>📍 {event.location}</p>
                       <p>
-                        📅{" "}
-                        {new Date(event.event_date).toLocaleString()}
+                        📅 {new Date(event.event_date).toLocaleString()}
                       </p>
                     </div>
 
@@ -247,14 +252,26 @@ function Events() {
                         </span>
                       </div>
 
-                      <button
-                        disabled={event.available_tickets === 0}
-                        onClick={() => navigate(`/events/${event.id}`)}
-                      >
-                        {event.available_tickets === 0
-                          ? "Sold Out"
-                          : "View Event"}
-                      </button>
+                      <div className="event-actions">
+                        <button
+                          type="button"
+                          onClick={() => addToWishlist(event.id)}
+                        >
+                          ❤️ Add to Wishlist
+                        </button>
+
+                        <button
+                          type="button"
+                          disabled={event.available_tickets === 0}
+                          onClick={() =>
+                            navigate(`/events/${event.id}`)
+                          }
+                        >
+                          {event.available_tickets === 0
+                            ? "Sold Out"
+                            : "View Event"}
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </div>

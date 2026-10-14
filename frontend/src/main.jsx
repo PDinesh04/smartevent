@@ -6,6 +6,7 @@ import App from "./App";
 import Events from "./pages/Events";
 import EventDetails from "./pages/EventDetails";
 import Bookings from "./pages/Bookings";
+import Wishlist from "./pages/Wishlist";
 import Notifications from "./pages/Notifications";
 import Profile from "./pages/Profile";
 import OrganizerDashboard from "./pages/OrganizerDashboard";
@@ -25,6 +26,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(
         <Route path="/events" element={<ProtectedRoute><Events /></ProtectedRoute>} />
         <Route path="/events/:id" element={<ProtectedRoute><EventDetails /></ProtectedRoute>} />
         <Route path="/bookings" element={<ProtectedRoute><Bookings /></ProtectedRoute>} />
+        <Route path="/wishlist" element={<ProtectedRoute><Wishlist /></ProtectedRoute>} />
         <Route path="/notifications" element={<ProtectedRoute><Notifications /></ProtectedRoute>} />
         <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
 

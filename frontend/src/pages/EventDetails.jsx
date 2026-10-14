@@ -16,6 +16,7 @@ function EventDetails() {
   const [couponError, setCouponError] = useState("");
   const [couponLoading, setCouponLoading] = useState(false);
   const [bookingLoading, setBookingLoading] = useState(false);
+  const [availabilityUpdated, setAvailabilityUpdated] = useState(false);
 
   const [reviews, setReviews] = useState([]);
   const [averageRating, setAverageRating] = useState(0);
@@ -39,6 +40,29 @@ function EventDetails() {
 
     loadEvent();
   }, [id]);
+
+
+  useEffect(() => {
+  const refreshAvailability = async () => {
+    try {
+      const response = await api.get(`/events/${id}`);
+      setEvent((previous) => {
+        if (!previous) return response.data;
+        return {
+          ...previous,
+          available_tickets: response.data.available_tickets,
+        };
+      });
+      setAvailabilityUpdated(true);
+    } catch (error) {
+      console.error("Unable to refresh ticket availability", error);
+    }
+  };
+
+  const intervalId = setInterval(refreshAvailability, 5000);
+
+  return () => clearInterval(intervalId);
+}, [id]);
 
   useEffect(() => {
     const loadReviews = async () => {

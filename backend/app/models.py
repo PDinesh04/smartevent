@@ -106,3 +106,20 @@ class Review(Base):
     rating = Column(Integer, nullable=False)
     review_text = Column(String(1000), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+class Wishlist(Base):
+    __tablename__ = "wishlists"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    event_id = Column(Integer, nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class EventUpdate(Base):
+    __tablename__ = "event_updates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    event_id = Column(Integer, nullable=False, index=True)
+    message = Column(String(1000), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)

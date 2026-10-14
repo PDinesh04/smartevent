@@ -46,6 +46,13 @@ function Navbar() {
         </NavLink>
 
         <NavLink
+          to="/wishlist"
+          className={linkClass}
+        >
+          ❤️ Wishlist
+        </NavLink>
+
+        <NavLink
           to="/profile"
           className={linkClass}
         >

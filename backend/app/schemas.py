@@ -69,3 +69,58 @@ class CouponApply(BaseModel):
 class ReviewCreate(BaseModel):
     rating: int = Field(ge=1, le=5)
     comment: str = Field(default="", max_length=1000)
+
+from pydantic import BaseModel
+from datetime import datetime
+
+
+class WishlistCreate(BaseModel):
+    event_id: int
+
+
+class WishlistResponse(BaseModel):
+    id: int
+    user_id: int
+    event_id: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class EventUpdateCreate(BaseModel):
+    event_id: int
+    message: str
+
+
+class EventUpdateResponse(BaseModel):
+    id: int
+    event_id: int
+    message: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class ProfileUpdate(BaseModel):
+    username: str | None = None
+    email: str | None = None
+
+
+class ProfileResponse(BaseModel):
+    id: int
+    username: str
+    email: str
+    role: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class ChatbotRequest(BaseModel):
+    message: str
+
+
+class ChatbotResponse(BaseModel):
+    reply: str
+    suggestions: list[str] = []
+
